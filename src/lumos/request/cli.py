@@ -97,23 +97,36 @@ def request(
         # Validate parameters or interactively input them
         app_uuid = UUID(app) if app else None
         selected_app: App = get_valid_app(app_uuid, app_like)
-        app_settings = client.get_appstore_app_setting(selected_app.id)
-        duration_options = set(app_settings.provisioning.time_based_access)
-        selected_permissions = None
 
         permission_uuids = [UUID(p) for p in permission] if permission else None
+        selected_permissions = None
+        duration_options: set[str] = set()
 
-        if app_settings.provisioning.groups_provisioning == ProvisioningMethodOption.GROUPS_AND_VISIBLE:
-            selected_permissions = select_permissions(
-                selected_app,
-                app_settings.provisioning.allow_multiple_permission_selection,
-                permission_uuids,
-                permission_like,
-            )
+        # If both app and permission are provided via CLI args, skip app_settings call
+        # as a workaround for the broken GET /appstore/apps/{id}/settings endpoint (returns 403)
+        if app_uuid and permission_uuids:
+            # Get permissions directly and derive duration_options from them
+            selected_permissions = get_valid_permissions(selected_app, permission_uuids, True)
             if selected_permissions:
                 duration_options = set(selected_permissions[0].duration_options)
                 for perm in selected_permissions[1:]:
                     duration_options = duration_options.intersection(perm.duration_options)
+        else:
+            # Interactive mode - need app_settings
+            app_settings = client.get_appstore_app_setting(selected_app.id)
+            duration_options = set(app_settings.provisioning.time_based_access)
+
+            if app_settings.provisioning.groups_provisioning == ProvisioningMethodOption.GROUPS_AND_VISIBLE:
+                selected_permissions = select_permissions(
+                    selected_app,
+                    app_settings.provisioning.allow_multiple_permission_selection,
+                    permission_uuids,
+                    permission_like,
+                )
+                if selected_permissions:
+                    duration_options = set(selected_permissions[0].duration_options)
+                    for perm in selected_permissions[1:]:
+                        duration_options = duration_options.intersection(perm.duration_options)
 
         duration, duration_friendly = get_duration(duration_options, length)
 
@@ -334,7 +347,20 @@ def select_user(user_like: str | None = None) -> UUID:
 
 def get_valid_app(app_id: UUID | None = None, app_like: str | None = None) -> App:
     app = None
-    while not app_id or not (app := client.get_appstore_app(app_id)):
+    # If app_id is provided, try to get app info from permissions endpoint
+    # as a workaround for the broken GET /appstore/apps/{id} endpoint (returns 403)
+    if app_id:
+        permissions, count, _ = client.get_app_requestable_permissions(app_id, page_size=1)
+        if count > 0:
+            perm = permissions[0]
+            # Construct App from permission data
+            app = App(
+                id=app_id,
+                user_friendly_label=f"App {app_id}",
+                app_class_id=perm.app_class_id,
+                instance_id=perm.app_instance_id or "unknown",
+            )
+    while not app:
         apps: list[App] = []
         while True:
             print("\n⏳ Loading your apps ...", end="\r")

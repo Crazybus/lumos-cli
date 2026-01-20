@@ -68,6 +68,7 @@ class Permission(LumosModel):
     label: str
     app_id: str
     app_class_id: str
+    app_instance_id: str = ""
     duration_options: list[str] = []
 
     def __str__(self):
